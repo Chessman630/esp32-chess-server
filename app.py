@@ -32,3 +32,16 @@ def get_last_move():
 
 if __name__ == "__main__":
     app.run(debug=True)
+
+@app.route("/reset", methods=["POST"])
+def reset_game():
+    data = request.get_json()
+    game_id = data.get("game_id")
+    if not game_id:
+        return jsonify({"status": "error", "message": "Missing game_id"}), 400
+
+    if game_id in games:
+        games[game_id]["moves"] = []
+        return jsonify({"status": "ok", "message": f"Game '{game_id}' reset"}), 200
+    else:
+        return jsonify({"status": "error", "message": f"Game '{game_id}' not found"}), 404
