@@ -31,21 +31,30 @@ def get_last_move():
 
 @app.route("/reset", methods=["POST"])
 def reset_game():
-    data = request.get_json()
-    print("🔧 /reset called with data:", data)
+    try:
+        data = request.get_json()
+        print("🔧 /reset called with:", data)
 
-    game_id = data.get("game_id")
-    if not game_id:
-        return jsonify({"status": "error", "message": "Missing game_id"}), 400
+        game_id = data.get("game_id")
+        if not game_id:
+            return jsonify({"status": "error", "message": "Missing game_id"}), 400
 
-    if game_id in games:
-        print(f"✅ Resetting game: {game_id}")
-        games[game_id]["moves"] = []  # ✅ valid now
-        return jsonify({"status": "ok", "message": f"Game '{game_id}' reset"}), 200
-    else:
-        print(f"⚠️ Game not found: {game_id}")
-        return jsonify({"status": "error", "message": f"Game '{game_id}' not found"}), 404
+        if game_id not in games:
+            print(f"⚠️ Game '{game_id}' not found")
+            return jsonify({"status": "error", "message": f"Game '{game_id}' not found"}), 404
 
-if __name__ == "__main__":
-    app.run(debug=True)
+        print(f"🧪 Type of games['{game_id}']: {type(games[game_id])}")
+        print(f"🧪 Current game entry: {games[game_id]}")
+
+        if isinstance(games[game_id], dict) and "moves" in games[game_id]:
+            games[game_id]["moves"] = []
+            print(f"✅ Game '{game_id}' reset successfully")
+            return jsonify({"status": "ok", "message": f"Game '{game_id}' reset"}), 200
+        else:
+            return jsonify({"status": "error", "message": "Game format invalid"}), 500
+
+    except Exception as e:
+        print(f"🔥 Exception in /reset: {e}")
+        return jsonify({"status": "error", "message": f"Internal error: {str(e)}"}), 500
+
 
