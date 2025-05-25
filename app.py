@@ -6,10 +6,28 @@ games = {}
 @app.route("/start", methods=["POST"])
 def start_game():
     game_id = request.json.get("game_id")
+    device_id = request.json.get("device_id")
+    username = request.json.get("username")
+
+    if not game_id or not device_id or not username:
+        return jsonify({"status": "error", "message": "Missing game_id, device_id, or username"}), 400
+
     if game_id in games:
         return jsonify({"status": "error", "message": "Game already exists"}), 400
-    games[game_id] = {"moves": []}  # ✅ store as dict with "moves" list
-    return jsonify({"status": "ok", "message": f"Game '{game_id}' created"})
+
+    games[game_id] = {
+        "moves": [],
+        "players": [
+            {"device_id": device_id, "username": username}
+        ]
+    }
+
+    return jsonify({
+        "status": "ok",
+        "message": f"Game '{game_id}' created",
+        "players": games[game_id]["players"]
+    })
+
 
 @app.route("/move", methods=["POST"])
 def post_move():
@@ -70,10 +88,28 @@ games = {}
 @app.route("/start", methods=["POST"])
 def start_game():
     game_id = request.json.get("game_id")
+    device_id = request.json.get("device_id")
+    username = request.json.get("username")
+
+    if not game_id or not device_id or not username:
+        return jsonify({"status": "error", "message": "Missing game_id, device_id, or username"}), 400
+
     if game_id in games:
         return jsonify({"status": "error", "message": "Game already exists"}), 400
-    games[game_id] = []
-    return jsonify({"status": "ok", "message": f"Game '{game_id}' created"})
+
+    games[game_id] = {
+        "moves": [],
+        "players": [
+            {"device_id": device_id, "username": username}
+        ]
+    }
+
+    return jsonify({
+        "status": "ok",
+        "message": f"Game '{game_id}' created",
+        "players": games[game_id]["players"]
+    })
+
 
 @app.route("/move", methods=["POST"])
 def post_move():
