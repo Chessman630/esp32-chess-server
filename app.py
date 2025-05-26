@@ -5,28 +5,35 @@ games = {}
 
 @app.route("/start", methods=["POST"])
 def start_game():
-    game_id = request.json.get("game_id")
-    device_id = request.json.get("device_id")
-    username = request.json.get("username")
+    data = request.get_json()
+    game_id = data.get("game_id")
+    device_id = data.get("device_id")
+    username = data.get("username")
 
-    if not game_id or not device_id or not username:
-        return jsonify({"status": "error", "message": "Missing game_id, device_id, or username"}), 400
+    if not game_id or not device_id:
+        return jsonify({"status": "error", "message": "Missing game_id or device_id"}), 400
 
-    if game_id in games:
-        return jsonify({"status": "error", "message": "Game already exists"}), 400
+    if game_id not in games:
+        # New game, assign ownership
+        games[game_id] = {
+            "owners": [device_id],
+            "usernames": [username or ""],
+            "moves": []
+        }
+        return jsonify({"status": "ok", "message": f"Game '{game_id}' created"})
 
-    games[game_id] = {
-        "moves": [],
-        "players": [
-            {"device_id": device_id, "username": username}
-        ]
-    }
+    # Game exists — check ownership
+    existing = games[game_id]
+    if device_id in existing["owners"]:
+        return jsonify({"status": "ok", "message": "Rejoined your own game"})
 
-    return jsonify({
-        "status": "ok",
-        "message": f"Game '{game_id}' created",
-        "players": games[game_id]["players"]
-    })
+    if len(existing["owners"]) >= 2:
+        return jsonify({"status": "error", "message": "Game already has two players"}), 403
+
+    # Add as second owner
+    existing["owners"].append(device_id)
+    existing["usernames"].append(username or "")
+    return jsonify({"status": "ok", "message": "Joined as second player"})
 
 
 @app.route("/move", methods=["POST"])
