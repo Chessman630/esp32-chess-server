@@ -35,15 +35,27 @@ def start_game():
     existing["usernames"].append(username or "")
     return jsonify({"status": "ok", "message": "Joined as second player"})
 
-
 @app.route("/move", methods=["POST"])
 def post_move():
-    game_id = request.json.get("game_id")
-    move = request.json.get("move")
+    data = request.get_json()
+    game_id = data.get("game_id")
+    move = data.get("move")
+    device_id = data.get("device_id")
+
+    if not game_id or not move or not device_id:
+        return jsonify({"status": "error", "message": "Missing fields"}), 400
+
     if game_id not in games:
         return jsonify({"status": "error", "message": "Game not found"}), 404
-    games[game_id]["moves"].append(move)  # ✅ access "moves" key
+
+    game = games[game_id]
+
+    if "owners" not in game or device_id not in game["owners"]:
+        return jsonify({"status": "error", "message": "Unauthorized"}), 403
+
+    game["moves"].append(move)
     return jsonify({"status": "ok", "message": f"Move '{move}' recorded"})
+
 
 @app.route("/lastmove", methods=["GET"])
 def get_last_move():
