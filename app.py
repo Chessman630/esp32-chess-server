@@ -54,7 +54,8 @@ def post_move():
         return jsonify({"status": "error", "message": "Unauthorized"}), 403
 
     game["moves"].append(move)
-    return jsonify({"status": "ok", "message": f"Move '{move}' recorded"})
+    print(f"🎮 Game '{game_id}' moves: {game['moves']}")
+     return jsonify({"status": "ok", "message": f"Move '{move}' recorded"})
 
 
 @app.route("/lastmove", methods=["GET"])
