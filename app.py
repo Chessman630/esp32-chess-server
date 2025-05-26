@@ -35,6 +35,7 @@ def start_game():
     existing["usernames"].append(username or "")
     return jsonify({"status": "ok", "message": "Joined as second player"})
 
+
 @app.route("/move", methods=["POST"])
 def post_move():
     data = request.get_json()
@@ -55,7 +56,7 @@ def post_move():
 
     game["moves"].append(move)
     print(f"🎮 Game '{game_id}' moves: {game['moves']}")
-     return jsonify({"status": "ok", "message": f"Move '{move}' recorded"})
+    return jsonify({"status": "ok", "message": f"Move '{move}' recorded"})
 
 
 @app.route("/lastmove", methods=["GET"])
@@ -67,106 +68,120 @@ def get_last_move():
         return jsonify({"status": "ok", "move": None})
     return jsonify({"status": "ok", "move": games[game_id]["moves"][-1]})
 
-@app.route("/reset", methods=["POST"])
-def reset_game():
-    try:
-        data = request.get_json()
-        print("🔧 /reset called with:", data)
 
-        game_id = data.get("game_id")
-        if not game_id:
-            return jsonify({"status": "error", "message": "Missing game_id"}), 400
-
-        if game_id not in games:
-            print(f"⚠️ Game '{game_id}' not found")
-            return jsonify({"status": "error", "message": f"Game '{game_id}' not found"}), 404
-
-        print(f"🧪 Type of games['{game_id}']: {type(games[game_id])}")
-        print(f"🧪 Current game entry: {games[game_id]}")
-
-        if isinstance(games[game_id], dict) and "moves" in games[game_id]:
-            games[game_id]["moves"] = []
-            print(f"✅ Game '{game_id}' reset successfully")
-            return jsonify({"status": "ok", "message": f"Game '{game_id}' reset"}), 200
-        else:
-            return jsonify({"status": "error", "message": "Game format invalid"}), 500
-
-    except Exception as e:
-        print(f"🔥 Exception in /reset: {e}")
-        return jsonify({"status": "error", "message": f"Internal error: {str(e)}"}), 500
-
-
-# Update to `app.py`
-
-from flask import Flask, request, jsonify
-
-app = Flask(__name__)
-
-# Store moves as list of strings
-games = {}
-
-@app.route("/start", methods=["POST"])
-def start_game():
-    game_id = request.json.get("game_id")
-    device_id = request.json.get("device_id")
-    username = request.json.get("username")
-
-    if not game_id or not device_id or not username:
-        return jsonify({"status": "error", "message": "Missing game_id, device_id, or username"}), 400
-
-    if game_id in games:
-        return jsonify({"status": "error", "message": "Game already exists"}), 400
-
-    games[game_id] = {
-        "moves": [],
-        "players": [
-            {"device_id": device_id, "username": username}
-        ]
-    }
-
-    return jsonify({
-        "status": "ok",
-        "message": f"Game '{game_id}' created",
-        "players": games[game_id]["players"]
-    })
-
-
-@app.route("/move", methods=["POST"])
-def post_move():
-    game_id = request.json.get("game_id")
-    move = request.json.get("move")
-    if game_id not in games:
-        return jsonify({"status": "error", "message": "Game not found"}), 404
-    games[game_id].append(move)
-    return jsonify({"status": "ok", "message": f"Move '{move}' recorded"})
-
-@app.route("/lastmove", methods=["GET"])
-def get_last_move():
-    game_id = request.args.get("game_id")
-    if game_id not in games:
-        return jsonify({"status": "error", "message": "Game not found"}), 404
-    if not games[game_id]:
-        return jsonify({"status": "ok", "move": None})
-    return jsonify({"status": "ok", "move": games[game_id][-1]})
-
-# ✅ New: Return full move list
 @app.route("/moves", methods=["GET"])
 def get_move_list():
     game_id = request.args.get("game_id")
     if game_id not in games:
         return jsonify({"status": "error", "message": "Game not found"}), 404
-    return jsonify({"status": "ok", "moves": games[game_id]})
+    return jsonify({"status": "ok", "moves": games[game_id]["moves"]})
+
 
 @app.route("/reset", methods=["POST"])
 def reset_game():
     data = request.get_json()
     game_id = data.get("game_id")
-    if not game_id:
-        return jsonify({"status": "error", "message": "Missing game_id"}), 400
-    if game_id in games:
-        games[game_id] = []
-        return jsonify({"status": "ok", "message": f"Game '{game_id}' reset"})
-    return jsonify({"status": "error", "message": f"Game '{game_id}' not found"}), 404
+    device_id = data.get("device_id")
+
+    if not game_id or not device_id:
+        return jsonify({"status": "error", "message": "Missing game_id or device_id"}), 400
+
+    if game_id not in games:
+        return jsonify({"status": "error", "message": "Game not found"}), 404
+
+    game = games[game_id]
+
+    if "owners" not in game or device_id not in game["owners"]:
+        return jsonify({"status": "error", "message": "Unauthorized"}), 403
+
+    game["moves"] = []
+    print(f"🔄 Game '{game_id}' has been reset by {device_id}")
+    print(f"🎮 Game '{game_id}' moves: {game['moves']}")
+    return jsonify({"status": "ok", "message": f"Game '{game_id}' reset"})
+
+# ✅ Get full list of active game IDs (for listing or debug)
+@app.route("/games", methods=["GET"])
+def list_games():
+    return jsonify({"status": "ok", "games": list(games.keys())})
+
+
+# ✅ Get detailed status of a specific game
+@app.route("/status", methods=["GET"])
+def game_status():
+    game_id = request.args.get("game_id")
+    if game_id not in games:
+        return jsonify({"status": "error", "message": "Game not found"}), 404
+
+    game = games[game_id]
+    return jsonify({
+        "status": "ok",
+        "game_id": game_id,
+        "owners": game.get("owners", []),
+        "usernames": game.get("usernames", []),
+        "move_count": len(game.get("moves", []))
+    })
+
+# ✅ Delete a game (only by an owner)
+@app.route("/delete", methods=["POST"])
+def delete_game():
+    data = request.get_json()
+    game_id = data.get("game_id")
+    device_id = data.get("device_id")
+
+    if not game_id or not device_id:
+        return jsonify({"status": "error", "message": "Missing game_id or device_id"}), 400
+
+    if game_id not in games:
+        return jsonify({"status": "error", "message": "Game not found"}), 404
+
+    game = games[game_id]
+    if device_id not in game.get("owners", []):
+        return jsonify({"status": "error", "message": "Unauthorized"}), 403
+
+    del games[game_id]
+    print(f"❌ Game '{game_id}' deleted by {device_id}")
+    return jsonify({"status": "ok", "message": f"Game '{game_id}' deleted"})
+
+@app.route("/games/open", methods=["GET"])
+def list_open_games():
+    open_games = []
+    for game_id, game in games.items():
+        if len(game.get("owners", [])) == 1:
+            open_games.append({
+                "game_id": game_id,
+                "username": game.get("usernames", [""])[0]
+            })
+    return jsonify({"status": "ok", "open_games": open_games})
+
+@app.route("/join", methods=["POST"])
+def join_game():
+    data = request.get_json()
+    game_id = data.get("game_id")
+    device_id = data.get("device_id")
+    username = data.get("username")
+
+    if not game_id or not device_id:
+        return jsonify({"status": "error", "message": "Missing game_id or device_id"}), 400
+
+    if game_id not in games:
+        return jsonify({"status": "error", "message": "Game not found"}), 404
+
+    game = games[game_id]
+
+    if device_id in game["owners"]:
+        return jsonify({"status": "ok", "message": "Rejoined your own game"})
+
+    if len(game["owners"]) >= 2:
+        return jsonify({"status": "error", "message": "Game already has two players"}), 403
+
+    # Add second player
+    game["owners"].append(device_id)
+    game["usernames"].append(username or "")
+    return jsonify({"status": "ok", "message": f"Joined game '{game_id}' as second player"})
+
+
+
 
 if __name__ == "__main__":
     app.run(debug=True)
+
