@@ -9,9 +9,34 @@ def start_game():
     game_id = data.get("game_id")
     device_id = data.get("device_id")
     username = data.get("username")
+    pin = data.get("pin")  # New: Optional PIN
 
     if not game_id or not device_id:
         return jsonify({"status": "error", "message": "Missing game_id or device_id"}), 400
+
+    if game_id not in games:
+        games[game_id] = {
+            "owners": [device_id],
+            "usernames": [username or ""],
+            "moves": [],
+            "pin": pin  # ✅ Store PIN if provided
+        }
+        return jsonify({"status": "ok", "message": f"Game '{game_id}' created"})
+
+    existing = games[game_id]
+    if device_id in existing["owners"]:
+        return jsonify({"status": "ok", "message": "Rejoined your own game"})
+
+    if len(existing["owners"]) >= 2:
+        return jsonify({"status": "error", "message": "Game already has two players"}), 403
+
+    if existing.get("pin"):
+        if pin != existing["pin"]:
+            return jsonify({"status": "error", "message": "Incorrect or missing invitation PIN"}), 403
+
+    existing["owners"].append(device_id)
+    existing["usernames"].append(username or "")
+    return jsonify({"status": "ok", "message": "Joined as second player"}), 400
 
     if game_id not in games:
         # New game, assign ownership
@@ -159,9 +184,29 @@ def join_game():
     game_id = data.get("game_id")
     device_id = data.get("device_id")
     username = data.get("username")
+    pin = data.get("pin")  # New: Optional PIN
 
     if not game_id or not device_id:
         return jsonify({"status": "error", "message": "Missing game_id or device_id"}), 400
+
+    if game_id not in games:
+        return jsonify({"status": "error", "message": "Game not found"}), 404
+
+    game = games[game_id]
+
+    if device_id in game["owners"]:
+        return jsonify({"status": "ok", "message": "Rejoined your own game"})
+
+    if len(game["owners"]) >= 2:
+        return jsonify({"status": "error", "message": "Game already has two players"}), 403
+
+    if game.get("pin"):
+        if pin != game["pin"]:
+            return jsonify({"status": "error", "message": "Incorrect or missing invitation PIN"}), 403
+
+    game["owners"].append(device_id)
+    game["usernames"].append(username or "")
+    return jsonify({"status": "ok", "message": f"Joined game '{game_id}' as second player"}), 400
 
     if game_id not in games:
         return jsonify({"status": "error", "message": "Game not found"}), 404
