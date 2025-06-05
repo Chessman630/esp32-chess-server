@@ -1,7 +1,33 @@
 from flask import Flask, request, jsonify
+import os
+import json
+import atexit
+
+GAMES_FILE = "games.json"
+
 
 app = Flask(__name__)
 games = {}
+
+def save_games():
+    try:
+        with open(GAMES_FILE, "w") as f:
+            json.dump(games, f)
+        print("💾 Game data saved to disk.")
+    except Exception as e:
+        print(f"❌ Failed to save game data: {e}")
+
+def load_games():
+    global games
+    if os.path.exists(GAMES_FILE):
+        try:
+            with open(GAMES_FILE, "r") as f:
+                games.update(json.load(f))
+            print("📥 Game data loaded from disk.")
+        except Exception as e:
+            print(f"❌ Failed to load game data: {e}")
+
+load_games()
 
 @app.route("/start", methods=["POST"])
 def start_game():
@@ -42,9 +68,12 @@ def start_game():
     return jsonify({"status": "ok", "message": "Joined game as second player"})
 
 
+
 @app.route('/ping', methods=['GET'])
 def ping():
     return 'pong', 200
+
+
 
 
 
@@ -198,6 +227,8 @@ def join_game():
 
 
 
+
+atexit.register(save_games)
 
 if __name__ == "__main__":
     app.run(debug=True)
