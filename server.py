@@ -42,9 +42,9 @@ def start_game():
     return jsonify({"status": "ok", "message": "Joined game as second player"})
 
 
-
-
-
+@app.route('/ping', methods=['GET'])
+def ping():
+    return 'pong', 200
 
 
 
