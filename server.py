@@ -195,6 +195,8 @@ def list_open_games():
             })
     return jsonify({"status": "ok", "open_games": open_games})
 
+
+
 @app.route("/join", methods=["POST"])
 def join_game():
     data = request.get_json()
@@ -211,8 +213,11 @@ def join_game():
 
     game = games[game_id]
 
+    # Allow originator to join again without error
     if device_id in game["owners"]:
-        return jsonify({"status": "ok", "message": "Rejoined your own game"})
+        if username not in game["usernames"]:
+            game["usernames"].append(username or "")
+        return jsonify({"status": "ok", "message": f"Resuming game '{game_id}' as creator"})
 
     if len(game["owners"]) >= 2:
         return jsonify({"status": "error", "message": "Game already has two players"}), 403
