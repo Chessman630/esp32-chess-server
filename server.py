@@ -5,7 +5,6 @@ import atexit
 
 GAMES_FILE = "games.json"
 
-
 app = Flask(__name__)
 games = {}
 
@@ -13,7 +12,7 @@ def save_games():
     try:
         with open(GAMES_FILE, "w") as f:
             json.dump(games, f)
-        print("💾 Game data saved to disk.")
+        print("📎 Game data saved to disk.")
     except Exception as e:
         print(f"❌ Failed to save game data: {e}")
 
@@ -23,7 +22,7 @@ def load_games():
         try:
             with open(GAMES_FILE, "r") as f:
                 games.update(json.load(f))
-            print("📥 Game data loaded from disk.")
+            print("📅 Game data loaded from disk.")
         except Exception as e:
             print(f"❌ Failed to load game data: {e}")
 
@@ -67,16 +66,9 @@ def start_game():
     game["usernames"].append(username or "")
     return jsonify({"status": "ok", "message": "Joined game as second player"})
 
-
-
 @app.route('/ping', methods=['GET'])
 def ping():
     return 'pong', 200
-
-
-
-
-
 
 @app.route("/move", methods=["POST"])
 def post_move():
@@ -100,7 +92,6 @@ def post_move():
     print(f"🎮 Game '{game_id}' moves: {game['moves']}")
     return jsonify({"status": "ok", "message": f"Move '{move}' recorded"})
 
-
 @app.route("/lastmove", methods=["GET"])
 def get_last_move():
     game_id = request.args.get("game_id")
@@ -110,14 +101,12 @@ def get_last_move():
         return jsonify({"status": "ok", "move": None})
     return jsonify({"status": "ok", "move": games[game_id]["moves"][-1]})
 
-
 @app.route("/moves", methods=["GET"])
 def get_move_list():
     game_id = request.args.get("game_id")
     if game_id not in games:
         return jsonify({"status": "error", "message": "Game not found"}), 404
     return jsonify({"status": "ok", "moves": games[game_id]["moves"]})
-
 
 @app.route("/reset", methods=["POST"])
 def reset_game():
@@ -141,13 +130,10 @@ def reset_game():
     print(f"🎮 Game '{game_id}' moves: {game['moves']}")
     return jsonify({"status": "ok", "message": f"Game '{game_id}' reset"})
 
-# ✅ Get full list of active game IDs (for listing or debug)
 @app.route("/games", methods=["GET"])
 def list_games():
     return jsonify({"status": "ok", "games": list(games.keys())})
 
-
-# ✅ Get detailed status of a specific game
 @app.route("/status", methods=["GET"])
 def game_status():
     game_id = request.args.get("game_id")
@@ -163,7 +149,6 @@ def game_status():
         "move_count": len(game.get("moves", []))
     })
 
-# ✅ Delete a game (only by an owner)
 @app.route("/delete", methods=["POST"])
 def delete_game():
     data = request.get_json()
@@ -195,8 +180,6 @@ def list_open_games():
             })
     return jsonify({"status": "ok", "open_games": open_games})
 
-
-
 @app.route("/join", methods=["POST"])
 def join_game():
     data = request.get_json()
@@ -213,11 +196,10 @@ def join_game():
 
     game = games[game_id]
 
-    # Allow originator to join again without error
     if device_id in game["owners"]:
         if username not in game["usernames"]:
             game["usernames"].append(username or "")
-        return jsonify({"status": "ok", "message": f"Resuming game '{game_id}' as creator"})
+        return jsonify({"status": "ok", "message": f"You rejoined your own open game '{game_id}'"})
 
     if len(game["owners"]) >= 2:
         return jsonify({"status": "error", "message": "Game already has two players"}), 403
@@ -230,11 +212,7 @@ def join_game():
     game["usernames"].append(username or "")
     return jsonify({"status": "ok", "message": f"Joined game '{game_id}' as second player"})
 
-
-
-
 atexit.register(save_games)
 
 if __name__ == "__main__":
     app.run(debug=True)
-
