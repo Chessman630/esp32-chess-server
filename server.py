@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 import os
 import json
 import atexit
+from datetime import datetime
 
 GAMES_FILE = "games.json"
 
@@ -45,7 +46,11 @@ def start_game():
             "owners": [device_id],
             "usernames": [username or ""],
             "moves": [],
-            "pin": pin or None
+            "pin": pin or None,
+            "color_chosen": False,
+            "plays_as_white": None,
+            "opponent": "",
+            "created": datetime.utcnow().isoformat()
         }
         return jsonify({"status": "ok", "message": f"Game '{game_id}' created"})
 
@@ -57,14 +62,7 @@ def start_game():
     if len(game["owners"]) >= 2:
         return jsonify({"status": "error", "message": "Game already has two players"}), 403
 
-    if game.get("pin"):
-        if pin != game["pin"]:
-            return jsonify({"status": "error", "message": "Incorrect or missing invitation PIN"}), 403
-
-    # Add second player
-    game["owners"].append(device_id)
-    game["usernames"].append(username or "")
-    return jsonify({"status": "ok", "message": "Joined game as second player"})
+    return jsonify({"status": "error", "message": "Use /join to enter an open game"}), 400
 
 @app.route('/ping', methods=['GET'])
 def ping():
@@ -146,7 +144,9 @@ def game_status():
         "game_id": game_id,
         "owners": game.get("owners", []),
         "usernames": game.get("usernames", []),
-        "move_count": len(game.get("moves", []))
+        "move_count": len(game.get("moves", [])),
+        "opponent": game.get("opponent", ""),
+        "plays_as_white": game.get("plays_as_white", None)
     })
 
 @app.route("/delete", methods=["POST"])
@@ -173,7 +173,7 @@ def delete_game():
 def list_open_games():
     open_games = []
     for game_id, game in games.items():
-        if len(game.get("owners", [])) == 1:
+        if len(game.get("owners", [])) == 1 and not game.get("color_chosen", False):
             open_games.append({
                 "game_id": game_id,
                 "username": game.get("usernames", [""])[0]
@@ -187,9 +187,10 @@ def join_game():
     device_id = data.get("device_id")
     username = data.get("username")
     pin = data.get("pin")  # Optional PIN
+    plays_as_white = data.get("plays_as_white")  # Must be True/False
 
-    if not game_id or not device_id:
-        return jsonify({"status": "error", "message": "Missing game_id or device_id"}), 400
+    if not game_id or not device_id or plays_as_white is None:
+        return jsonify({"status": "error", "message": "Missing game_id, device_id, or color choice"}), 400
 
     if game_id not in games:
         return jsonify({"status": "error", "message": "Game not found"}), 404
@@ -197,22 +198,26 @@ def join_game():
     game = games[game_id]
 
     if device_id in game["owners"]:
-        if username not in game["usernames"]:
-            game["usernames"].append(username or "")
-        return jsonify({"status": "ok", "message": f"You rejoined your own open game '{game_id}'"})
+        return jsonify({"status": "ok", "message": "Already in this game"})
 
     if len(game["owners"]) >= 2:
         return jsonify({"status": "error", "message": "Game already has two players"}), 403
 
-    if game.get("pin"):
-        if pin != game["pin"]:
-            return jsonify({"status": "error", "message": "Incorrect or missing invitation PIN"}), 403
+    if game.get("pin") and pin != game["pin"]:
+        return jsonify({"status": "error", "message": "Incorrect or missing invitation PIN"}), 403
 
+    # Accept join
     game["owners"].append(device_id)
     game["usernames"].append(username or "")
-    return jsonify({"status": "ok", "message": f"Joined game '{game_id}' as second player"})
+    game["color_chosen"] = True
+    game["plays_as_white"] = bool(plays_as_white)
+    game["opponent"] = username or ""
+
+    print(f"🎯 Game '{game_id}' joined by {username}, playing as {'White' if plays_as_white else 'Black'}")
+    return jsonify({"status": "ok", "message": f"Joined game '{game_id}' successfully"})
 
 atexit.register(save_games)
 
 if __name__ == "__main__":
     app.run(debug=True)
+ 
