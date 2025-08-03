@@ -249,6 +249,10 @@ def resume_my_games():
 
     return jsonify({"status": "ok", "resumable_games": resumed})
 
+@app.route("/admin/purge", methods=["POST"])
+def purge_games():
+    games.clear()
+    return jsonify({"status": "ok", "message": "All games purged"})
 
 
 atexit.register(save_games)
