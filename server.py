@@ -191,6 +191,7 @@ def list_open_games():
             })
     return jsonify({"status": "ok", "open_games": open_games})
 
+
 @app.route("/join", methods=["POST"])
 def join_game():
     data = request.get_json()
@@ -223,9 +224,12 @@ def join_game():
     game["color_chosen"] = True
     game["plays_as_white"] = bool(plays_as_white)
     game["opponent"] = username or ""
+    game["white_player"] = device_id if plays_as_white else game["owners"][0]
 
     print(f"🎯 Game '{game_id}' joined by {username}, playing as {'White' if plays_as_white else 'Black'}")
     return jsonify({"status": "ok", "message": f"Joined game '{game_id}' successfully"})
+
+
 
 @app.route("/games/resume", methods=["GET"])
 def resume_my_games():
