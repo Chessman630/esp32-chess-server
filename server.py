@@ -140,6 +140,12 @@ def game_status():
     if not game:
         return jsonify({"status": "error", "message": "Game not found"}), 404
 
+    if len(game["owners"]) < 2:
+        return jsonify({"status": "error", "message": "Game incomplete"}), 400
+
+    # Determine white player's device_id
+    white_player = game["owners"][0] if game["plays_as_white"] else game["owners"][1]
+
     return jsonify({
         "status": "ok",
         "game_id": game_id,
@@ -148,8 +154,9 @@ def game_status():
         "opponent": game["opponent"],
         "move_count": len(game["moves"]),
         "plays_as_white": game["plays_as_white"],
-        "white_player": game["owners"][0] if game["plays_as_white"] else game["owners"][1]
+        "white_player": white_player
     })
+
 
 
 
