@@ -216,6 +216,30 @@ def join_game():
     print(f"🎯 Game '{game_id}' joined by {username}, playing as {'White' if plays_as_white else 'Black'}")
     return jsonify({"status": "ok", "message": f"Joined game '{game_id}' successfully"})
 
+@app.route("/games/resume", methods=["GET"])
+def resume_my_games():
+    device_id = request.args.get("device_id")
+    if not device_id:
+        return jsonify({"status": "error", "message": "Missing device_id"}), 400
+
+    resumed = []
+    for game_id, game in games.items():
+        if (
+            device_id in game.get("owners", []) and
+            game.get("color_chosen") and
+            len(game.get("owners", [])) == 2
+        ):
+            resumed.append({
+                "game_id": game_id,
+                "opponent": game.get("opponent", ""),
+                "plays_as_white": game.get("plays_as_white"),
+                "move_count": len(game.get("moves", []))
+            })
+
+    return jsonify({"status": "ok", "resumable_games": resumed})
+
+
+
 atexit.register(save_games)
 
 if __name__ == "__main__":
