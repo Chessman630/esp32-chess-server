@@ -132,22 +132,26 @@ def reset_game():
 def list_games():
     return jsonify({"status": "ok", "games": list(games.keys())})
 
-@app.route("/status", methods=["GET"])
+@app.route("/status")
 def game_status():
     game_id = request.args.get("game_id")
-    if game_id not in games:
+    game = games.get(game_id)
+
+    if not game:
         return jsonify({"status": "error", "message": "Game not found"}), 404
 
-    game = games[game_id]
     return jsonify({
         "status": "ok",
         "game_id": game_id,
-        "owners": game.get("owners", []),
-        "usernames": game.get("usernames", []),
-        "move_count": len(game.get("moves", [])),
-        "opponent": game.get("opponent", ""),
-        "plays_as_white": game.get("plays_as_white", None)
+        "owners": game["owners"],
+        "usernames": game["usernames"],
+        "opponent": game["opponent"],
+        "move_count": len(game["moves"]),
+        "plays_as_white": game["plays_as_white"],
+        "white_player": game["owners"][0] if game["plays_as_white"] else game["owners"][1]
     })
+
+
 
 @app.route("/delete", methods=["POST"])
 def delete_game():
