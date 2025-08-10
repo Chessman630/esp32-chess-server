@@ -88,6 +88,7 @@ def post_move():
 
     game["moves"].append(move)
     print(f"🎮 Game '{game_id}' moves: {game['moves']}")
+    print(f"🎮 MOVE {len(game['moves'])}: {game_id} | {device_id} -> {move}")
     return jsonify({"status": "ok", "message": f"Move '{move}' recorded"})
 
 @app.route("/lastmove", methods=["GET"])
