@@ -140,25 +140,25 @@ def game_status():
     if not game:
         return jsonify({"status": "error", "message": "Game not found"}), 404
 
-    if len(game["owners"]) < 2:
+    if len(game.get("owners", [])) < 2:
         return jsonify({"status": "error", "message": "Game incomplete"}), 400
 
-    # Determine white player's device_id
-    white_player = game["owners"][0] if game["plays_as_white"] else game["owners"][1]
+    # Prefer stored white_player if present, else derive correctly
+    white_player = game.get("white_player")
+    if not white_player:
+        # plays_as_white == True means the JOINER is white (owners[1])
+        white_player = game["owners"][1] if game.get("plays_as_white") else game["owners"][0]
 
     return jsonify({
         "status": "ok",
         "game_id": game_id,
-        "owners": game["owners"],
-        "usernames": game["usernames"],
-        "opponent": game["opponent"],
-        "move_count": len(game["moves"]),
-        "plays_as_white": game["plays_as_white"],
+        "owners": game.get("owners", []),
+        "usernames": game.get("usernames", []),
+        "opponent": game.get("opponent", ""),
+        "move_count": len(game.get("moves", [])),
+        "plays_as_white": game.get("plays_as_white", None),
         "white_player": white_player
     })
-
-
-
 
 @app.route("/delete", methods=["POST"])
 def delete_game():
