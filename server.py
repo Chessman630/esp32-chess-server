@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 import os
 import json
 import atexit
@@ -50,7 +50,50 @@ def ensure_two_players(game):
     owners = game.get("owners", [])
     return len(owners) == 2 and game.get("white_player") and game.get("black_player")
 
-# ---------- Routes ----------
+def game_is_over(game):
+    return bool(game.get("winner")) or bool(game.get("result"))
+
+def minimal_pgn_from_uci(game_id, game):
+    """Build a minimal PGN-like export from UCI (or simple) moves.
+    We do NOT convert to SAN; we just number them as '1. e2e4 e7e5 2. g1f3 ...'"""
+    moves = game.get("moves", [])
+    white_name = game.get("usernames", [""])[0] if game.get("usernames") else ""
+    black_name = ""
+    # Try to find black username
+    owners = game.get("owners", [])
+    usernames = game.get("usernames", [])
+    if game.get("black_player") in owners:
+        try:
+            idx = owners.index(game.get("black_player"))
+            if 0 <= idx < len(usernames):
+                black_name = usernames[idx]
+        except ValueError:
+            pass
+
+    result = game.get("result") or "*"
+    tags = [
+        f'[Event "ESP32 Online Chess"]',
+        f'[Site "Render/Flask"]',
+        f'[Date "{datetime.utcnow().strftime("%Y.%m.%d")}"]',
+        f'[Round "-"]',
+        f'[White "{white_name}"]',
+        f'[Black "{black_name}"]',
+        f'[Result "{result}"]',
+        f'[GameId "{game_id}"]'
+    ]
+    # Number the moves: white move starts at index 0
+    body_parts = []
+    for i, mv in enumerate(moves):
+        if i % 2 == 0:
+            body_parts.append(f"{(i//2)+1}. {mv}")
+        else:
+            body_parts.append(f"{mv}")
+    body = " ".join(body_parts)
+    if result != "*":
+        body = (body + " " + result).strip()
+    return "\n".join(tags) + "\n\n" + body + "\n"
+
+# ---------- Core Routes ----------
 
 @app.route('/ping', methods=['GET'])
 def ping():
@@ -69,7 +112,6 @@ def start_game():
             return jsonify({"status": "error", "message": "Missing game_id or device_id"}), 400
 
         if game_id not in games:
-            # New game scaffold
             games[game_id] = {
                 "owners": [device_id],
                 "usernames": [username or ""],
@@ -82,7 +124,9 @@ def start_game():
                 "black_player": None,
                 "opponent": "",
                 "turn": None,                   # "white" or "black" once both joined
-                "created": datetime.utcnow().isoformat()
+                "created": datetime.utcnow().isoformat(),
+                "winner": None,                 # device_id of winner if finished
+                "result": None                  # "1-0","0-1","1/2-1/2"
             }
             return jsonify({"status": "ok", "message": f"Game '{game_id}' created"})
 
@@ -115,6 +159,9 @@ def join_game():
             return jsonify({"status": "error", "message": "Game not found"}), 404
 
         game = games[game_id]
+
+        if game_is_over(game):
+            return jsonify({"status": "error", "message": "Game already finished"}), 409
 
         # Private game enforcement
         if game.get("pin") and pin != game["pin"]:
@@ -169,6 +216,9 @@ def post_move():
 
         if "owners" not in game or device_id not in game["owners"]:
             return jsonify({"status": "error", "message": "Unauthorized"}), 403
+
+        if game_is_over(game):
+            return jsonify({"status": "error", "message": "Game already finished"}), 409
 
         if not ensure_two_players(game):
             return jsonify({"status": "error", "message": "Game not ready (waiting for both players)"}), 409
@@ -238,6 +288,8 @@ def reset_game():
         game["history"] = []
         # If colors are assigned, white moves next; otherwise None
         game["turn"] = "white" if ensure_two_players(game) else None
+        game["winner"] = None
+        game["result"] = None
 
         print(f"🔄 Game '{game_id}' has been reset by {device_id}")
         print(f"🎮 Game '{game_id}' moves: {game['moves']}")
@@ -259,10 +311,6 @@ def game_status():
         return jsonify({"status": "error", "message": "Game not found"}), 404
 
     owners = game.get("owners", [])
-    # Game not ready?
-    if len(owners) < 2 or not game.get("white_player") or not game.get("black_player"):
-        return jsonify({"status": "error", "message": "Game incomplete"}), 400
-
     white_player = game.get("white_player")
     black_player = game.get("black_player")
     turn = game.get("turn")
@@ -278,13 +326,18 @@ def game_status():
         "white_player": white_player,
         "black_player": black_player,
         "turn": turn,
-        "last_move": game["moves"][-1] if game["moves"] else None
+        "last_move": game["moves"][-1] if game["moves"] else None,
+        "winner": game.get("winner"),
+        "result": game.get("result")
     }
+
+    if len(owners) < 2 or not white_player or not black_player:
+        payload["message"] = "Game incomplete"
 
     if device_id:
         color = get_color_for_device(game, device_id)
         payload["your_color"] = color
-        payload["your_turn"] = (color is not None and turn == color)
+        payload["your_turn"] = (color is not None and turn == color and not game_is_over(game))
 
     return jsonify(payload)
 
@@ -342,7 +395,6 @@ def resume_my_games():
             game.get("color_chosen") and
             len(game.get("owners", [])) == 2
         ):
-            # Determine opponent username if available
             owners = game.get("owners", [])
             usernames = game.get("usernames", [])
             if device_id == game.get("white_player"):
@@ -351,7 +403,7 @@ def resume_my_games():
                 opp_id = game.get("white_player")
             try:
                 opp_index = owners.index(opp_id) if opp_id in owners else -1
-                opp_name = usernames[opp_index] if opp_index >= 0 and opp_index < len(usernames) else game.get("opponent", "")
+                opp_name = usernames[opp_index] if 0 <= opp_index < len(usernames) else game.get("opponent", "")
             except ValueError:
                 opp_name = game.get("opponent", "")
 
@@ -360,10 +412,110 @@ def resume_my_games():
                 "opponent": opp_name,
                 "plays_as_white": (game.get("white_player") == device_id),
                 "move_count": len(game.get("moves", [])),
-                "turn": game.get("turn")
+                "turn": game.get("turn"),
+                "winner": game.get("winner"),
+                "result": game.get("result")
             })
 
     return jsonify({"status": "ok", "resumable_games": resumed})
+
+# ---------- New Discrete Endpoints ----------
+
+@app.route("/forfeit", methods=["POST"])
+def forfeit_game():
+    def _impl():
+        data = request.get_json()
+        game_id = data.get("game_id")
+        device_id = data.get("device_id")
+
+        if not game_id or not device_id:
+            return jsonify({"status": "error", "message": "Missing game_id or device_id"}), 400
+        if game_id not in games:
+            return jsonify({"status": "error", "message": "Game not found"}), 404
+
+        game = games[game_id]
+        if device_id not in game.get("owners", []):
+            return jsonify({"status": "error", "message": "Unauthorized"}), 403
+        if game_is_over(game):
+            return jsonify({"status": "error", "message": "Game already finished"}), 409
+
+        owners = game.get("owners", [])
+        if len(owners) < 2:
+            return jsonify({"status": "error", "message": "Game has not started"}), 409
+
+        # Winner is the other player
+        winner_id = owners[0] if owners[1] == device_id else owners[1]
+        game["winner"] = winner_id
+        # Result depends on color of winner
+        if winner_id == game.get("white_player"):
+            game["result"] = "1-0"
+        elif winner_id == game.get("black_player"):
+            game["result"] = "0-1"
+        else:
+            game["result"] = "*"
+        game["turn"] = None  # Game over
+
+        print(f"🏳️ Forfeit: {device_id} forfeited in '{game_id}'. Winner: {winner_id}")
+        return jsonify({"status": "ok", "message": f"Player forfeited; winner set", "winner": winner_id, "result": game["result"]})
+    return mutate(_impl)
+
+@app.route("/setcolor", methods=["POST"])
+def set_color():
+    def _impl():
+        data = request.get_json()
+        game_id = data.get("game_id")
+        requester = data.get("device_id")  # must be an owner
+        white_device_id = data.get("white_device_id")
+        black_device_id = data.get("black_device_id")
+        force = bool(data.get("force", False))  # allow overriding existing colors
+
+        if not game_id or not requester or not white_device_id or not black_device_id:
+            return jsonify({"status": "error", "message": "Missing fields"}), 400
+        if game_id not in games:
+            return jsonify({"status": "error", "message": "Game not found"}), 404
+
+        game = games[game_id]
+        owners = game.get("owners", [])
+
+        if requester not in owners:
+            return jsonify({"status": "error", "message": "Unauthorized"}), 403
+
+        if not all(d in owners for d in (white_device_id, black_device_id)):
+            return jsonify({"status": "error", "message": "Both players must be current owners"}), 400
+
+        if (game.get("white_player") or game.get("black_player")) and not force:
+            return jsonify({"status": "error", "message": "Colors already set; use force=true to override"}), 409
+
+        game["white_player"] = white_device_id
+        game["black_player"] = black_device_id
+        game["color_chosen"] = True
+        # legacy hint: plays_as_white refers to second owner historically; keep best-effort
+        if len(owners) >= 2:
+            game["plays_as_white"] = (white_device_id == owners[1])
+        # Start with white to move
+        game["turn"] = "white"
+        game["winner"] = None
+        game["result"] = None
+
+        print(f"🎨 Colors set for '{game_id}': W={white_device_id} B={black_device_id} (force={force})")
+        return jsonify({"status": "ok", "message": "Colors assigned", "turn": game["turn"]})
+    return mutate(_impl)
+
+@app.route("/exportpgn", methods=["GET"])
+def export_pgn():
+    game_id = request.args.get("game_id")
+    as_text = request.args.get("format", "json").lower() in ("txt", "text", "plain")
+    if not game_id or game_id not in games:
+        return jsonify({"status": "error", "message": "Game not found"}), 404
+
+    game = games[game_id]
+    pgn_text = minimal_pgn_from_uci(game_id, game)
+
+    if as_text:
+        # Return raw text/plain (handy for browser download)
+        return Response(pgn_text, mimetype="text/plain")
+
+    return jsonify({"status": "ok", "pgn": pgn_text})
 
 # --- Administrative ---
 
