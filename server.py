@@ -3,11 +3,14 @@ import os
 import json
 import atexit
 from datetime import datetime
+import secrets  # for unbiased random selection
 
 GAMES_FILE = "games.json"
+PAIRS_FILE = "pairs.json"   # new: persistent color history per device pair
 
 app = Flask(__name__)
 games = {}
+pairs = {}  # key: "devA|devB" (sorted); value: {"last_white": "<device_id>"}
 
 # ---------- Persistence ----------
 
@@ -29,15 +32,76 @@ def load_games():
         except Exception as e:
             print(f"❌ Failed to load game data: {e}")
 
+def save_pairs():
+    try:
+        with open(PAIRS_FILE, "w") as f:
+            json.dump(pairs, f)
+        print("📎 Pair history saved to disk.")
+    except Exception as e:
+        print(f"❌ Failed to save pair history: {e}")
+
+def load_pairs():
+    global pairs
+    if os.path.exists(PAIRS_FILE):
+        try:
+            with open(PAIRS_FILE, "r") as f:
+                pairs.update(json.load(f))
+            print("🤝 Pair history loaded from disk.")
+        except Exception as e:
+            print(f"❌ Failed to load pair history: {e}")
+
 load_games()
+load_pairs()
 
 def mutate(fn, *args, **kwargs):
     """Run a mutation, then persist."""
     result = fn(*args, **kwargs)
+    # Persist both structures on any state change
     save_games()
+    save_pairs()
     return result
 
 # ---------- Helpers ----------
+
+def pair_key(a: str, b: str) -> str:
+    """Stable key for a pair of device IDs, order-independent."""
+    if a is None or b is None:
+        return None
+    return "|".join(sorted([str(a), str(b)]))
+
+def auto_assign_colors(game):
+    """Assign colors based on pair history (random first time, alternate thereafter)."""
+    owners = game.get("owners", [])
+    if len(owners) != 2:
+        return False
+
+    a, b = owners[0], owners[1]
+    key = pair_key(a, b)
+    if not key:
+        return False
+
+    last = pairs.get(key, {}).get("last_white")
+
+    if last == a:
+        white, black = b, a
+    elif last == b:
+        white, black = a, b
+    else:
+        # first time: random
+        white = secrets.choice([a, b])
+        black = b if white == a else a
+
+    game["white_player"] = white
+    game["black_player"] = black
+    game["color_chosen"] = True
+    game["plays_as_white"] = None  # legacy hint no longer meaningful
+    game["turn"] = "white"         # standard chess rule
+    game["winner"] = None
+    game["result"] = None
+
+    # record new "last_white" for this pair so next time we flip
+    pairs[key] = {"last_white": white}
+    return True
 
 def get_color_for_device(game, device_id):
     if game.get("white_player") == device_id:
@@ -119,7 +183,7 @@ def start_game():
                 "history": [],                  # optional richer history
                 "pin": pin or None,             # presence => private game
                 "color_chosen": False,
-                "plays_as_white": None,         # legacy hint for joiner choice
+                "plays_as_white": None,         # legacy hint for older clients
                 "white_player": None,
                 "black_player": None,
                 "opponent": "",
@@ -150,10 +214,9 @@ def join_game():
         device_id = data.get("device_id")
         username = data.get("username")
         pin = data.get("pin")              # Optional, required if game has a PIN
-        plays_as_white = data.get("plays_as_white")  # Must be True/False
 
-        if not game_id or not device_id or plays_as_white is None:
-            return jsonify({"status": "error", "message": "Missing game_id, device_id, or color choice"}), 400
+        if not game_id or not device_id:
+            return jsonify({"status": "error", "message": "Missing game_id or device_id"}), 400
 
         if game_id not in games:
             return jsonify({"status": "error", "message": "Game not found"}), 404
@@ -176,24 +239,13 @@ def join_game():
         # Accept join
         game["owners"].append(device_id)
         game["usernames"].append(username or "")
-        game["color_chosen"] = True
-        game["plays_as_white"] = bool(plays_as_white)
-
-        # Assign colors
-        if plays_as_white:
-            game["white_player"] = device_id
-            game["black_player"] = game["owners"][0]
-        else:
-            game["white_player"] = game["owners"][0]
-            game["black_player"] = device_id
+        # Color is arbitrated by server now
+        auto_assign_colors(game)
 
         # Opponent (for creator’s view)
         game["opponent"] = username or ""
 
-        # White to move first
-        game["turn"] = "white"
-
-        print(f"🎯 Game '{game_id}' joined by {username}, playing as {'White' if plays_as_white else 'Black'}")
+        print(f"🎯 Game '{game_id}' joined by {username}. Assigned: W={game.get('white_player')} B={game.get('black_player')}")
         return jsonify({"status": "ok", "message": f"Joined game '{game_id}' successfully"})
 
     return mutate(_impl)
@@ -419,7 +471,7 @@ def resume_my_games():
 
     return jsonify({"status": "ok", "resumable_games": resumed})
 
-# ---------- New Discrete Endpoints ----------
+# ---------- Discrete Endpoints (unchanged, still useful) ----------
 
 @app.route("/forfeit", methods=["POST"])
 def forfeit_game():
@@ -489,13 +541,16 @@ def set_color():
         game["white_player"] = white_device_id
         game["black_player"] = black_device_id
         game["color_chosen"] = True
-        # legacy hint: plays_as_white refers to second owner historically; keep best-effort
         if len(owners) >= 2:
             game["plays_as_white"] = (white_device_id == owners[1])
-        # Start with white to move
         game["turn"] = "white"
         game["winner"] = None
         game["result"] = None
+
+        # Keep pair history consistent with manual override
+        key = pair_key(owners[0], owners[1]) if len(owners) == 2 else None
+        if key:
+            pairs[key] = {"last_white": white_device_id}
 
         print(f"🎨 Colors set for '{game_id}': W={white_device_id} B={black_device_id} (force={force})")
         return jsonify({"status": "ok", "message": "Colors assigned", "turn": game["turn"]})
@@ -512,7 +567,6 @@ def export_pgn():
     pgn_text = minimal_pgn_from_uci(game_id, game)
 
     if as_text:
-        # Return raw text/plain (handy for browser download)
         return Response(pgn_text, mimetype="text/plain")
 
     return jsonify({"status": "ok", "pgn": pgn_text})
@@ -525,7 +579,21 @@ def purge_games():
     save_games()
     return jsonify({"status": "ok", "message": "All games purged"})
 
+@app.route("/admin/pairs", methods=["GET"])
+def admin_list_pairs():
+    """Optional helper to inspect color history."""
+    return jsonify({"status": "ok", "pairs": pairs})
+
+@app.route("/admin/pairs/clear", methods=["POST"])
+def admin_clear_pairs():
+    """Optional helper to reset color history."""
+    pairs.clear()
+    save_pairs()
+    return jsonify({"status": "ok", "message": "Pair history cleared"})
+
 atexit.register(save_games)
+atexit.register(save_pairs)
 
 if __name__ == "__main__":
     app.run(debug=True)
+ 
