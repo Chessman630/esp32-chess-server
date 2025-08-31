@@ -64,12 +64,12 @@ def mutate(fn, *args, **kwargs):
     return result
 
 # ---------- Helpers ----------
+from datetime import datetime, timezone
+#import secrets  # at top of file
 
 def pair_key(a: str, b: str) -> str:
-    """Stable key for a pair of device IDs, order-independent."""
-    if a is None or b is None:
-        return None
-    return "|".join(sorted([str(a), str(b)]))
+    return "|".join(sorted([a, b]))
+
 
 def auto_assign_colors(game):
     """Assign colors based on pair history (random first time, alternate thereafter)."""
@@ -184,6 +184,7 @@ def start_game():
                 "moves": [],                    # keep as list[str] for device compatibility
                 "history": [],                  # optional richer history
                 "pin": pin or None,             # presence => private game
+                "open": True,                   # 👈 accepting a joiner
                 "color_chosen": False,
                 "plays_as_white": None,         # legacy hint for older clients
                 "white_player": None,
@@ -208,49 +209,79 @@ def start_game():
 
     return mutate(_impl)
 
+
 @app.route("/join", methods=["POST"])
 def join_game():
     def _impl():
-        data = request.get_json()
-        game_id = data.get("game_id")
-        device_id = data.get("device_id")
-        username = data.get("username")
-        pin = data.get("pin")              # Optional, required if game has a PIN
+        data   = request.get_json(force=True, silent=True) or {}
+        gid    = data.get("game_id")
+        device = data.get("device_id")
+        uname  = data.get("username", "")
+        pin    = data.get("pin")  # optional; only used for private
 
-        if not game_id or not device_id:
+        if not gid or not device:
             return jsonify({"status": "error", "message": "Missing game_id or device_id"}), 400
 
-        if game_id not in games:
+        g = games.get(gid)
+        if not g:
             return jsonify({"status": "error", "message": "Game not found"}), 404
 
-        game = games[game_id]
-
-        if game_is_over(game):
+        # Finished games are not joinable
+        if game_is_over(g):
             return jsonify({"status": "error", "message": "Game already finished"}), 409
 
         # Private game enforcement
-        if game.get("pin") and pin != game["pin"]:
+        if g.get("pin") and pin != g["pin"]:
             return jsonify({"status": "error", "message": "Incorrect or missing invitation PIN"}), 403
 
-        if device_id in game["owners"]:
+        owners = g.setdefault("owners", [])
+        # Idempotency: already in => OK
+        if device in owners:
             return jsonify({"status": "ok", "message": "Already in this game"})
 
-        if len(game["owners"]) >= 2:
+        if len(owners) >= 2:
             return jsonify({"status": "error", "message": "Game already has two players"}), 403
 
         # Accept join
-        game["owners"].append(device_id)
-        game["usernames"].append(username or "")
-        # Color is arbitrated by server now
-        auto_assign_colors(game)
+        owners.append(device)
+        g["owners"] = owners
+        g.setdefault("usernames", []).append(uname or "")
 
-        # Opponent (for creator’s view)
-        game["opponent"] = username or ""
+        if len(owners) == 2:
+            creator = owners[0]
+            joiner  = owners[1]
+            k = pair_key(creator, joiner)
 
-        print(f"🎯 Game '{game_id}' joined by {username}. Assigned: W={game.get('white_player')} B={game.get('black_player')}")
-        return jsonify({"status": "ok", "message": f"Joined game '{game_id}' successfully"})
+            last_white = pairs.get(k, {}).get("last_white")
+            if last_white is None:
+                # First meeting: randomize
+                white = secrets.choice([creator, joiner])
+            else:
+                # Flip: whoever was not white last time becomes white now
+                white = joiner if last_white == creator else creator
+
+            black = joiner if white == creator else creator
+
+            g["white_player"]  = white
+            g["black_player"]  = black
+            g["color_chosen"]  = True
+            g["turn"]          = "white"
+            g["opponent"]      = uname or ""
+            # Game no longer “open” (your /games/open uses owners/color flags already)
+            # but add this for clarity if you use it elsewhere:
+            g["open"] = False
+
+            # Persist pair history for the flip next time
+            pairs[k] = {"last_white": white}
+
+            print(f"[JOIN] {gid} owners={g['owners']} white={white} black={black} key={k}")
+        else:
+            print(f"[JOIN] {gid} owners now {owners}")
+
+        return jsonify({"status": "ok", "message": f"Joined game '{gid}' successfully"})
 
     return mutate(_impl)
+
 
 @app.route("/move", methods=["POST"])
 def post_move():
@@ -431,6 +462,7 @@ def list_open_games():
             open_games.append({
                 "game_id": game_id,
                 "username": game.get("usernames", [""])[0],
+                "owner":    game["usernames"][0],   # compatibility
                 "created": game.get("created")
             })
     print(f"[OPEN] returning {len(open_games)} open games")
