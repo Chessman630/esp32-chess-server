@@ -12,6 +12,7 @@ app = Flask(__name__)
 games = {}
 pairs = {}  # key: "devA|devB" (sorted); value: {"last_white": "<device_id>"}
 
+
 # ---------- Persistence ----------
 
 def save_games():
@@ -52,6 +53,7 @@ def load_pairs():
 
 load_games()
 load_pairs()
+print(f"[BOOT] games={len(games)}, pairs={len(pairs)}")
 
 def mutate(fn, *args, **kwargs):
     """Run a mutation, then persist."""
@@ -419,20 +421,21 @@ def delete_game():
 @app.route("/games/open", methods=["GET"])
 def list_open_games():
     open_games = []
+    print(f"[OPEN] evaluating {len(games)} games")
     for game_id, game in games.items():
-        # Only list games with exactly one owner, no color chosen,
-        # and NOT private (no PIN)
-        if (
-            len(game.get("owners", [])) == 1 and
-            not game.get("color_chosen", False) and
-            not game.get("pin")
-        ):
+        owners = game.get("owners", [])
+        color_chosen = game.get("color_chosen", False)
+        has_pin = bool(game.get("pin"))
+        print(f"[OPEN] {game_id}: owners={len(owners)} color_chosen={color_chosen} pin={has_pin}")
+        if (len(owners) == 1 and not color_chosen and not has_pin):
             open_games.append({
                 "game_id": game_id,
                 "username": game.get("usernames", [""])[0],
                 "created": game.get("created")
             })
+    print(f"[OPEN] returning {len(open_games)} open games")
     return jsonify({"status": "ok", "open_games": open_games})
+
 
 @app.route("/games/resume", methods=["GET"])
 def resume_my_games():
