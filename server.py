@@ -2,7 +2,7 @@ from flask import Flask, request, jsonify, Response
 import os
 import json
 import atexit
-from datetime import datetime
+from datetime import datetime, timezone  # at top if not present
 import secrets  # for unbiased random selection
 
 GAMES_FILE = "games.json"
@@ -165,6 +165,50 @@ def minimal_pgn_from_uci(game_id, game):
 def ping():
     return 'pong', 200
 
+@app.route("/games/my-open", methods=["POST"])
+def my_open_status():
+    data      = request.get_json(force=True, silent=True) or {}
+    device_id = data.get("device_id")
+    if not device_id:
+        return jsonify({"status":"error","message":"Missing device_id"}), 400
+
+    waiting, joined = [], []
+    for gid, g in games.items():
+        owners = g.get("owners", [])
+        if not owners or owners[0] != device_id:
+            continue  # only games this device CREATED
+
+        # skip finished games
+        if g.get("winner") is not None or g.get("result") is not None:
+            continue
+
+        if len(owners) == 1 and not g.get("color_chosen", False):
+            waiting.append({
+                "game_id":  gid,
+                "created":  g.get("created",""),
+            })
+        elif len(owners) == 2 and g.get("color_chosen", False):
+            # This one has been joined – tell Gary who/when
+            usernames = g.get("usernames", [])
+            # best effort for joiner name
+            opp_name = ""
+            if len(usernames) >= 2:
+                opp_name = usernames[1]              # joiner username
+            else:
+                opp_name = g.get("joiner_username","")
+            joined.append({
+                "game_id":     gid,
+                "opponent":    opp_name,
+                "joined_at":   g.get("joined_at",""),
+                "your_color":  "white" if device_id == g.get("white_player") else "black",
+                "turn":        g.get("turn",""),
+                "move_count":  len(g.get("moves", [])),
+            })
+
+    print(f"[MY-OPEN] device={device_id} waiting={len(waiting)} joined={len(joined)}")
+    return jsonify({"status":"ok","waiting_open":waiting,"joined":joined})
+
+
 @app.route("/start", methods=["POST"])
 def start_game():
     def _impl():
@@ -267,9 +311,10 @@ def join_game():
             g["color_chosen"]  = True
             g["turn"]          = "white"
             g["opponent"]      = uname or ""
-            # Game no longer “open” (your /games/open uses owners/color flags already)
-            # but add this for clarity if you use it elsewhere:
             g["open"] = False
+            g["joined_at"]        = datetime.utcnow().isoformat()
+            g["joiner_device_id"] = device
+            g["joiner_username"]  = uname or ""
 
             # Persist pair history for the flip next time
             pairs[k] = {"last_white": white}
