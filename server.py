@@ -4,6 +4,7 @@ import json
 import atexit
 from datetime import datetime, timezone  # at top if not present
 import secrets  # for unbiased random selection
+import hashlib
 
 GAMES_FILE = "games.json"
 PAIRS_FILE = "pairs.json"   # new: persistent color history per device pair
@@ -14,6 +15,30 @@ pairs = {}  # key: "devA|devB" (sorted); value: {"last_white": "<device_id>"}
 
 
 # ---------- Persistence ----------
+
+def get_color_for_device(game: dict, device_id: str) -> str | None:
+    """
+    Return 'white', 'black', or None for this device in the given game.
+    """
+    if not device_id:
+        return None
+
+    if device_id == game.get("white_player"):
+        return "white"
+    if device_id == game.get("black_player"):
+        return "black"
+
+    # Colors not assigned yet or device isn't one of the owners
+    return None
+
+
+def moves_hash(moves):
+    h = hashlib.sha1()
+    for m in moves:
+        h.update(m.encode("utf-8"))
+        h.update(b"\x00")  # simple separator
+    return h.hexdigest()
+
 
 def save_games():
     try:
@@ -390,11 +415,33 @@ def get_last_move():
     return jsonify({"status": "ok", "move": games[game_id]["moves"][-1]})
 
 @app.route("/moves", methods=["GET"])
-def get_move_list():
-    game_id = request.args.get("game_id")
-    if game_id not in games:
+def get_moves():
+    gid   = request.args.get("game_id")
+    since = request.args.get("since", default=0, type=int)
+
+    g = games.get(gid)
+    if not g:
         return jsonify({"status": "error", "message": "Game not found"}), 404
-    return jsonify({"status": "ok", "moves": games[game_id]["moves"]})
+
+    ms = g.get("moves", [])
+    n  = len(ms)
+
+    # clamp 'since' safely
+    if since is None: since = 0
+    if since < 0:     since = 0
+    if since > n:     since = n
+
+    delta = ms[since:]  # empty list if already up-to-date
+
+    return jsonify({
+        "status":      "ok",
+        "game_id":     gid,
+        "since":       since,
+        "moves":       delta,
+        "move_count":  n,
+        "moves_hash":  moves_hash(ms),
+    })
+
 
 @app.route("/reset", methods=["POST"])
 def reset_game():
@@ -433,41 +480,54 @@ def list_games():
 
 @app.route("/status")
 def game_status():
-    game_id = request.args.get("game_id")
-    device_id = request.args.get("device_id")  # optional to compute your_turn
-    game = games.get(game_id)
+    gid = request.args.get("game_id")
+    device_id = request.args.get("device_id")  # optional, for your_turn/opponent
+    game = games.get(gid)
 
     if not game:
         return jsonify({"status": "error", "message": "Game not found"}), 404
 
+    # Safe locals
+    moves  = game.get("moves", [])
     owners = game.get("owners", [])
-    white_player = game.get("white_player")
-    black_player = game.get("black_player")
-    turn = game.get("turn")
+    users  = game.get("usernames", [])
+    white  = game.get("white_player")
+    black  = game.get("black_player")
+    turn   = game.get("turn")
 
     payload = {
-        "status": "ok",
-        "game_id": game_id,
-        "owners": owners,
-        "usernames": game.get("usernames", []),
-        "opponent": game.get("opponent", ""),
-        "move_count": len(game.get("moves", [])),
-        "plays_as_white": game.get("plays_as_white", None),  # legacy hint
-        "white_player": white_player,
-        "black_player": black_player,
-        "turn": turn,
-        "last_move": game["moves"][-1] if game["moves"] else None,
-        "winner": game.get("winner"),
-        "result": game.get("result")
+        "status":        "ok",
+        "game_id":       gid,
+        "owners":        owners,
+        "usernames":     users,
+        "opponent":      game.get("opponent", ""),  # may be overridden below
+        "move_count":    len(moves),
+        "moves_hash":    moves_hash(moves),
+        "plays_as_white": game.get("plays_as_white", None),  # legacy hint (optional)
+        "white_player":  white,
+        "black_player":  black,
+        "turn":          turn,
+        "last_move":     moves[-1] if moves else None,
+        "winner":        game.get("winner"),
+        "result":        game.get("result"),
+        "complete":      game_is_over(game),
     }
 
-    if len(owners) < 2 or not white_player or not black_player:
+    if len(owners) < 2 or not white or not black:
         payload["message"] = "Game incomplete"
 
+    # Per-device view (color, your_turn, opponent from caller's perspective)
     if device_id:
-        color = get_color_for_device(game, device_id)
+        color = get_color_for_device(game, device_id)  # returns "white"/"black"/None
         payload["your_color"] = color
-        payload["your_turn"] = (color is not None and turn == color and not game_is_over(game))
+        payload["your_turn"]  = bool(color) and (turn == color) and not payload["complete"]
+
+        if device_id in owners and len(users) == 2:
+            try:
+                idx = owners.index(device_id)
+                payload["opponent"] = users[1 - idx]
+            except ValueError:
+                pass
 
     return jsonify(payload)
 
