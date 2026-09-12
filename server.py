@@ -5,6 +5,7 @@ import atexit
 from datetime import datetime, timezone  # at top if not present
 import secrets  # for unbiased random selection
 import hashlib
+import chess
 
 GAMES_FILE = "games.json"
 PAIRS_FILE = "pairs.json"   # new: persistent color history per device pair
@@ -144,6 +145,66 @@ def ensure_two_players(game):
 def game_is_over(game):
     return bool(game.get("winner")) or bool(game.get("result"))
 
+
+def build_board_from_moves(game):
+    """Rebuild a python-chess Board from the stored UCI move list."""
+    board = chess.Board()
+    for idx, move_text in enumerate(game.get("moves", []), start=1):
+        try:
+            move = chess.Move.from_uci(move_text)
+        except ValueError as e:
+            raise ValueError(f"Invalid UCI move at ply {idx}: {move_text}") from e
+
+        if move not in board.legal_moves:
+            raise ValueError(f"Illegal stored move at ply {idx}: {move_text}")
+
+        board.push(move)
+
+    return board
+
+
+def finish_game(game, *, result, winner_id=None, reason):
+    """Mark a game complete in one place so every ending is recorded consistently."""
+    game["winner"] = winner_id
+    game["result"] = result
+    game["end_reason"] = reason
+    game["turn"] = None
+    game["completed_at"] = datetime.utcnow().isoformat()
+    game["draw_offer_by"] = None
+
+
+def adjudicate_board(game, board):
+    """
+    Apply automatic chess endings after a move.
+    claim_draw=False means threefold/50-move claims remain explicit player actions.
+    """
+    outcome = board.outcome(claim_draw=False)
+    if outcome is None:
+        return False
+
+    termination = outcome.termination.name.lower()
+
+    if outcome.winner is None:
+        finish_game(
+            game,
+            result="1/2-1/2",
+            winner_id=None,
+            reason=termination,
+        )
+        return True
+
+    winner_color = "white" if outcome.winner == chess.WHITE else "black"
+    winner_id = game.get("white_player") if winner_color == "white" else game.get("black_player")
+    result = "1-0" if winner_color == "white" else "0-1"
+
+    finish_game(
+        game,
+        result=result,
+        winner_id=winner_id,
+        reason=termination,
+    )
+    return True
+
 def minimal_pgn_from_uci(game_id, game):
     """Build a minimal PGN-like export from UCI (or simple) moves.
     We do NOT convert to SAN; we just number them as '1. e2e4 e7e5 2. g1f3 ...'"""
@@ -262,7 +323,10 @@ def start_game():
                 "turn": None,                   # "white" or "black" once both joined
                 "created": datetime.utcnow().isoformat(),
                 "winner": None,                 # device_id of winner if finished
-                "result": None                  # "1-0","0-1","1/2-1/2"
+                "result": None,                 # "1-0","0-1","1/2-1/2"
+                "end_reason": None,             # checkmate, stalemate, resignation, etc.
+                "completed_at": None,
+                "draw_offer_by": None           # device_id of player offering a draw
             }
             return jsonify({"status": "ok", "message": f"Game '{game_id}' created"})
 
@@ -356,29 +420,34 @@ def join_game():
 @app.route("/move", methods=["POST"])
 def post_move():
     def _impl():
-        data = request.get_json()
+        data = request.get_json(force=True, silent=True) or {}
         game_id = data.get("game_id")
-        move = data.get("move")
+        move_text = data.get("move")
         device_id = data.get("device_id")
 
-        if not game_id or not move or not device_id:
+        if not game_id or not move_text or not device_id:
             return jsonify({"status": "error", "message": "Missing fields"}), 400
 
-        if game_id not in games:
+        game = games.get(game_id)
+        if not game:
             return jsonify({"status": "error", "message": "Game not found"}), 404
 
-        game = games[game_id]
-
-        if "owners" not in game or device_id not in game["owners"]:
+        if device_id not in game.get("owners", []):
             return jsonify({"status": "error", "message": "Unauthorized"}), 403
 
         if game_is_over(game):
-            return jsonify({"status": "error", "message": "Game already finished"}), 409
+            return jsonify({
+                "status": "error",
+                "message": "Game already finished",
+                "result": game.get("result"),
+                "winner": game.get("winner"),
+                "end_reason": game.get("end_reason"),
+            }), 409
 
         if not ensure_two_players(game):
             return jsonify({"status": "error", "message": "Game not ready (waiting for both players)"}), 409
 
-        # Enforce server-side turn
+        # Enforce server-side turn.
         color = get_color_for_device(game, device_id)
         if color is None:
             return jsonify({"status": "error", "message": "Player color not assigned"}), 409
@@ -386,24 +455,69 @@ def post_move():
         if game.get("turn") != color:
             return jsonify({"status": "error", "message": f"Not {color}'s turn"}), 409
 
-        # Record (keep string list for devices)
-        game["moves"].append(move)
-        # Optional richer history with metadata
-        game["history"].append({
+        # The server is the Grand Arbiter: rebuild the position and validate the move.
+        try:
+            board = build_board_from_moves(game)
+            move = chess.Move.from_uci(move_text)
+        except ValueError as e:
+            return jsonify({"status": "error", "message": str(e)}), 400
+
+        expected_color = chess.WHITE if color == "white" else chess.BLACK
+        if board.turn != expected_color:
+            return jsonify({"status": "error", "message": "Stored position turn disagrees with game state"}), 409
+
+        if move not in board.legal_moves:
+            return jsonify({"status": "error", "message": f"Illegal move: {move_text}"}), 409
+
+        # Record move only after server-side validation.
+        game.setdefault("moves", []).append(move_text)
+        game.setdefault("history", []).append({
             "idx": len(game["moves"]),
-            "move": move,
+            "move": move_text,
             "by": device_id,
             "color": color,
             "ts": datetime.utcnow().isoformat()
         })
 
-        # Flip turn
+        # Any pending draw offer lapses when the offered-to player makes a move.
+        if game.get("draw_offer_by") and game.get("draw_offer_by") != device_id:
+            game["draw_offer_by"] = None
+
+        # Evaluate the resulting position.
+        board.push(move)
+        ended = adjudicate_board(game, board)
+
+        if ended:
+            print(
+                f"🏁 GAME OVER: {game_id} | result={game.get('result')} "
+                f"| reason={game.get('end_reason')} | winner={game.get('winner')}"
+            )
+            return jsonify({
+                "status": "ok",
+                "message": f"Move '{move_text}' recorded; game finished",
+                "complete": True,
+                "result": game.get("result"),
+                "winner": game.get("winner"),
+                "end_reason": game.get("end_reason"),
+                "next_turn": None,
+            })
+
+        # Normal continuation.
         game["turn"] = "black" if color == "white" else "white"
 
-        print(f"🎮 MOVE {len(game['moves'])}: {game_id} | {device_id} ({color}) -> {move} | next: {game['turn']}")
-        return jsonify({"status": "ok", "message": f"Move '{move}' recorded", "next_turn": game["turn"]})
+        print(
+            f"🎮 MOVE {len(game['moves'])}: {game_id} | "
+            f"{device_id} ({color}) -> {move_text} | next: {game['turn']}"
+        )
+        return jsonify({
+            "status": "ok",
+            "message": f"Move '{move_text}' recorded",
+            "complete": False,
+            "next_turn": game["turn"],
+        })
 
     return mutate(_impl)
+
 
 @app.route("/lastmove", methods=["GET"])
 def get_last_move():
@@ -467,6 +581,9 @@ def reset_game():
         game["turn"] = "white" if ensure_two_players(game) else None
         game["winner"] = None
         game["result"] = None
+        game["end_reason"] = None
+        game["completed_at"] = None
+        game["draw_offer_by"] = None
 
         print(f"🔄 Game '{game_id}' has been reset by {device_id}")
         print(f"🎮 Game '{game_id}' moves: {game['moves']}")
@@ -510,6 +627,9 @@ def game_status():
         "last_move":     moves[-1] if moves else None,
         "winner":        game.get("winner"),
         "result":        game.get("result"),
+        "end_reason":    game.get("end_reason"),
+        "completed_at":  game.get("completed_at"),
+        "draw_offer_by": game.get("draw_offer_by"),
         "complete":      game_is_over(game),
     }
 
@@ -521,6 +641,12 @@ def game_status():
         color = get_color_for_device(game, device_id)  # returns "white"/"black"/None
         payload["your_color"] = color
         payload["your_turn"]  = bool(color) and (turn == color) and not payload["complete"]
+        payload["draw_offer_from_opponent"] = (
+            bool(game.get("draw_offer_by")) and
+            game.get("draw_offer_by") != device_id and
+            device_id in owners and
+            not payload["complete"]
+        )
 
         if device_id in owners and len(users) == 2:
             try:
@@ -585,7 +711,8 @@ def resume_my_games():
         if (
             device_id in game.get("owners", []) and
             game.get("color_chosen") and
-            len(game.get("owners", [])) == 2
+            len(game.get("owners", [])) == 2 and
+            not game_is_over(game)
         ):
             owners = game.get("owners", [])
             usernames = game.get("usernames", [])
@@ -613,43 +740,212 @@ def resume_my_games():
 
 # ---------- Discrete Endpoints (unchanged, still useful) ----------
 
-@app.route("/forfeit", methods=["POST"])
-def forfeit_game():
+@app.route("/resign", methods=["POST"])
+def resign_game():
     def _impl():
-        data = request.get_json()
+        data = request.get_json(force=True, silent=True) or {}
         game_id = data.get("game_id")
         device_id = data.get("device_id")
 
         if not game_id or not device_id:
             return jsonify({"status": "error", "message": "Missing game_id or device_id"}), 400
-        if game_id not in games:
+
+        game = games.get(game_id)
+        if not game:
             return jsonify({"status": "error", "message": "Game not found"}), 404
 
-        game = games[game_id]
         if device_id not in game.get("owners", []):
             return jsonify({"status": "error", "message": "Unauthorized"}), 403
+
         if game_is_over(game):
             return jsonify({"status": "error", "message": "Game already finished"}), 409
 
-        owners = game.get("owners", [])
-        if len(owners) < 2:
+        if not ensure_two_players(game):
             return jsonify({"status": "error", "message": "Game has not started"}), 409
 
-        # Winner is the other player
-        winner_id = owners[0] if owners[1] == device_id else owners[1]
-        game["winner"] = winner_id
-        # Result depends on color of winner
-        if winner_id == game.get("white_player"):
-            game["result"] = "1-0"
-        elif winner_id == game.get("black_player"):
-            game["result"] = "0-1"
-        else:
-            game["result"] = "*"
-        game["turn"] = None  # Game over
+        resigning_color = get_color_for_device(game, device_id)
+        winner_id = (
+            game.get("black_player") if resigning_color == "white"
+            else game.get("white_player")
+        )
+        result = "0-1" if resigning_color == "white" else "1-0"
 
-        print(f"🏳️ Forfeit: {device_id} forfeited in '{game_id}'. Winner: {winner_id}")
-        return jsonify({"status": "ok", "message": f"Player forfeited; winner set", "winner": winner_id, "result": game["result"]})
+        finish_game(
+            game,
+            result=result,
+            winner_id=winner_id,
+            reason="resignation",
+        )
+
+        print(f"🏳️ RESIGN: {device_id} resigned in '{game_id}'. Winner: {winner_id}")
+        return jsonify({
+            "status": "ok",
+            "message": "Player resigned",
+            "winner": winner_id,
+            "result": result,
+            "end_reason": "resignation",
+            "complete": True,
+        })
+
     return mutate(_impl)
+
+
+# Backward-compatible alias for older firmware.
+@app.route("/forfeit", methods=["POST"])
+def forfeit_game():
+    return resign_game()
+
+
+@app.route("/draw/offer", methods=["POST"])
+def offer_draw():
+    def _impl():
+        data = request.get_json(force=True, silent=True) or {}
+        game_id = data.get("game_id")
+        device_id = data.get("device_id")
+
+        if not game_id or not device_id:
+            return jsonify({"status": "error", "message": "Missing game_id or device_id"}), 400
+
+        game = games.get(game_id)
+        if not game:
+            return jsonify({"status": "error", "message": "Game not found"}), 404
+
+        if device_id not in game.get("owners", []):
+            return jsonify({"status": "error", "message": "Unauthorized"}), 403
+
+        if game_is_over(game):
+            return jsonify({"status": "error", "message": "Game already finished"}), 409
+
+        if not ensure_two_players(game):
+            return jsonify({"status": "error", "message": "Game has not started"}), 409
+
+        existing = game.get("draw_offer_by")
+        if existing == device_id:
+            return jsonify({"status": "ok", "message": "Draw offer already pending"})
+
+        if existing and existing != device_id:
+            return jsonify({
+                "status": "error",
+                "message": "Opponent already offered a draw; accept or decline it instead",
+            }), 409
+
+        game["draw_offer_by"] = device_id
+        print(f"🤝 DRAW OFFER: {device_id} offered a draw in '{game_id}'")
+        return jsonify({"status": "ok", "message": "Draw offered"})
+
+    return mutate(_impl)
+
+
+@app.route("/draw/respond", methods=["POST"])
+def respond_draw():
+    def _impl():
+        data = request.get_json(force=True, silent=True) or {}
+        game_id = data.get("game_id")
+        device_id = data.get("device_id")
+        accept = data.get("accept")
+
+        if not game_id or not device_id or not isinstance(accept, bool):
+            return jsonify({"status": "error", "message": "Missing game_id/device_id or boolean accept"}), 400
+
+        game = games.get(game_id)
+        if not game:
+            return jsonify({"status": "error", "message": "Game not found"}), 404
+
+        if device_id not in game.get("owners", []):
+            return jsonify({"status": "error", "message": "Unauthorized"}), 403
+
+        if game_is_over(game):
+            return jsonify({"status": "error", "message": "Game already finished"}), 409
+
+        offer_by = game.get("draw_offer_by")
+        if not offer_by:
+            return jsonify({"status": "error", "message": "No draw offer is pending"}), 409
+
+        if offer_by == device_id:
+            return jsonify({"status": "error", "message": "You cannot respond to your own draw offer"}), 409
+
+        if accept:
+            finish_game(
+                game,
+                result="1/2-1/2",
+                winner_id=None,
+                reason="draw_agreement",
+            )
+            print(f"🤝 DRAW ACCEPTED in '{game_id}'")
+            return jsonify({
+                "status": "ok",
+                "message": "Draw accepted",
+                "result": "1/2-1/2",
+                "winner": None,
+                "end_reason": "draw_agreement",
+                "complete": True,
+            })
+
+        game["draw_offer_by"] = None
+        print(f"↩️ DRAW DECLINED by {device_id} in '{game_id}'")
+        return jsonify({"status": "ok", "message": "Draw declined", "complete": False})
+
+    return mutate(_impl)
+
+
+@app.route("/draw/claim", methods=["POST"])
+def claim_draw():
+    def _impl():
+        data = request.get_json(force=True, silent=True) or {}
+        game_id = data.get("game_id")
+        device_id = data.get("device_id")
+
+        if not game_id or not device_id:
+            return jsonify({"status": "error", "message": "Missing game_id or device_id"}), 400
+
+        game = games.get(game_id)
+        if not game:
+            return jsonify({"status": "error", "message": "Game not found"}), 404
+
+        if device_id not in game.get("owners", []):
+            return jsonify({"status": "error", "message": "Unauthorized"}), 403
+
+        if game_is_over(game):
+            return jsonify({"status": "error", "message": "Game already finished"}), 409
+
+        if not ensure_two_players(game):
+            return jsonify({"status": "error", "message": "Game has not started"}), 409
+
+        color = get_color_for_device(game, device_id)
+        if game.get("turn") != color:
+            return jsonify({"status": "error", "message": "A draw claim may only be made on your turn"}), 409
+
+        try:
+            board = build_board_from_moves(game)
+        except ValueError as e:
+            return jsonify({"status": "error", "message": str(e)}), 409
+
+        if board.can_claim_threefold_repetition():
+            reason = "threefold_repetition"
+        elif board.can_claim_fifty_moves():
+            reason = "fifty_move_rule"
+        else:
+            return jsonify({"status": "error", "message": "No claimable draw exists in this position"}), 409
+
+        finish_game(
+            game,
+            result="1/2-1/2",
+            winner_id=None,
+            reason=reason,
+        )
+
+        print(f"⚖️ DRAW CLAIM: '{game_id}' ended by {reason}")
+        return jsonify({
+            "status": "ok",
+            "message": "Draw claim accepted",
+            "result": "1/2-1/2",
+            "winner": None,
+            "end_reason": reason,
+            "complete": True,
+        })
+
+    return mutate(_impl)
+
 
 @app.route("/setcolor", methods=["POST"])
 def set_color():
@@ -686,6 +982,9 @@ def set_color():
         game["turn"] = "white"
         game["winner"] = None
         game["result"] = None
+        game["end_reason"] = None
+        game["completed_at"] = None
+        game["draw_offer_by"] = None
 
         # Keep pair history consistent with manual override
         key = pair_key(owners[0], owners[1]) if len(owners) == 2 else None
