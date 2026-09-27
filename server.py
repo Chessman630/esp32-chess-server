@@ -326,7 +326,7 @@ def start_game():
                 "result": None,                 # "1-0","0-1","1/2-1/2"
                 "end_reason": None,             # checkmate, stalemate, resignation, etc.
                 "completed_at": None,
-                "draw_offer_by": None           # device_id of player offering a draw
+                "draw_offer_by": None,           # device_id of player offering a draw
                 "paused_players": []
             }
             return jsonify({"status": "ok", "message": f"Game '{game_id}' created"})
