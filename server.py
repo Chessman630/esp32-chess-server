@@ -327,6 +327,7 @@ def start_game():
                 "end_reason": None,             # checkmate, stalemate, resignation, etc.
                 "completed_at": None,
                 "draw_offer_by": None           # device_id of player offering a draw
+                "paused_players": []
             }
             return jsonify({"status": "ok", "message": f"Game '{game_id}' created"})
 
@@ -647,6 +648,18 @@ def game_status():
             device_id in owners and
             not payload["complete"]
         )
+        
+                # Pause state from this device's point of view
+        paused_players = game.get("paused_players", [])
+
+        payload["you_paused"] = (
+            device_id in paused_players
+        )
+
+        payload["opponent_paused"] = (
+            device_id in owners and
+            any(p != device_id for p in paused_players)
+        )
 
         if device_id in owners and len(users) == 2:
             try:
@@ -739,6 +752,105 @@ def resume_my_games():
     return jsonify({"status": "ok", "resumable_games": resumed})
 
 # ---------- Discrete Endpoints (unchanged, still useful) ----------
+
+# ---------- Pause / Resume ----------
+
+@app.route("/pause", methods=["POST"])
+def pause_game():
+    def _impl():
+        data = request.get_json(force=True, silent=True) or {}
+        game_id = data.get("game_id")
+        device_id = data.get("device_id")
+
+        if not game_id or not device_id:
+            return jsonify({
+                "status": "error",
+                "message": "Missing game_id or device_id"
+            }), 400
+
+        game = games.get(game_id)
+        if not game:
+            return jsonify({
+                "status": "error",
+                "message": "Game not found"
+            }), 404
+
+        if device_id not in game.get("owners", []):
+            return jsonify({
+                "status": "error",
+                "message": "Unauthorized"
+            }), 403
+
+        if game_is_over(game):
+            return jsonify({
+                "status": "error",
+                "message": "Game already finished"
+            }), 409
+
+        paused = game.setdefault("paused_players", [])
+
+        # Idempotent: pressing PAUSE twice causes no trouble.
+        if device_id not in paused:
+            paused.append(device_id)
+
+        print(f"⏸️ PAUSE: {device_id} paused '{game_id}'")
+
+        return jsonify({
+            "status": "ok",
+            "message": "Game paused",
+            "paused": True
+        })
+
+    return mutate(_impl)
+
+
+@app.route("/resume", methods=["POST"])
+def resume_game():
+    def _impl():
+        data = request.get_json(force=True, silent=True) or {}
+        game_id = data.get("game_id")
+        device_id = data.get("device_id")
+
+        if not game_id or not device_id:
+            return jsonify({
+                "status": "error",
+                "message": "Missing game_id or device_id"
+            }), 400
+
+        game = games.get(game_id)
+        if not game:
+            return jsonify({
+                "status": "error",
+                "message": "Game not found"
+            }), 404
+
+        if device_id not in game.get("owners", []):
+            return jsonify({
+                "status": "error",
+                "message": "Unauthorized"
+            }), 403
+
+        if game_is_over(game):
+            return jsonify({
+                "status": "error",
+                "message": "Game already finished"
+            }), 409
+
+        paused = game.setdefault("paused_players", [])
+
+        if device_id in paused:
+            paused.remove(device_id)
+
+        print(f"▶️ RESUME: {device_id} resumed '{game_id}'")
+
+        return jsonify({
+            "status": "ok",
+            "message": "Game resumed",
+            "paused": False
+        })
+
+    return mutate(_impl)
+
 
 @app.route("/resign", methods=["POST"])
 def resign_game():
