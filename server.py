@@ -255,7 +255,7 @@ def ping():
 def firmware_version():
     return jsonify({
         "status": "ok",
-        "version": "0.40",
+        "version": "0.41",
         "bin": "/firmware/Chess_0_40.bin",
         "notes": "Current development firmware"
     })
