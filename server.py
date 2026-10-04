@@ -251,6 +251,15 @@ def minimal_pgn_from_uci(game_id, game):
 def ping():
     return 'pong', 200
 
+@app.route("/firmware/version", methods=["GET"])
+def firmware_version():
+    return jsonify({
+        "status": "ok",
+        "version": "0.40",
+        "bin": "/firmware/Chess_0_40.bin",
+        "notes": "Current development firmware"
+    })
+
 @app.route("/games/my-open", methods=["POST"])
 def my_open_status():
     data      = request.get_json(force=True, silent=True) or {}
