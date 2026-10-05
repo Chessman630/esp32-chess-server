@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, send_from_directory
 import os
 import json
 import atexit
@@ -251,14 +251,20 @@ def minimal_pgn_from_uci(game_id, game):
 def ping():
     return 'pong', 200
 
+
 @app.route("/firmware/version", methods=["GET"])
 def firmware_version():
     return jsonify({
         "status": "ok",
         "version": "0.41",
-        "bin": "/firmware/Chess_0_40.bin",
+        "bin": "/firmware/Chess_0_41.bin",
         "notes": "Current development firmware"
     })
+
+
+@app.route("/firmware/<path:filename>", methods=["GET"])
+def firmware_download(filename):
+    return send_from_directory("firmware", filename)
 
 @app.route("/games/my-open", methods=["POST"])
 def my_open_status():
