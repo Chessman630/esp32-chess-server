@@ -254,10 +254,47 @@ def ping():
 
 @app.route("/firmware/version", methods=["GET"])
 def firmware_version():
+    firmware_dir = os.path.join(app.root_path, "firmware")
+
+    versions = []
+
+    try:
+        filenames = os.listdir(firmware_dir)
+    except OSError as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Could not read firmware directory: {e}"
+        }), 500
+
+    for filename in filenames:
+        if not filename.startswith("Chess_0_") or not filename.endswith(".bin"):
+            continue
+
+        # Example: Chess_0_43.bin -> 0.43
+        version_part = filename[len("Chess_"):-len(".bin")]
+        version = version_part.replace("_", ".")
+
+        try:
+            version_key = tuple(int(part) for part in version.split("."))
+        except ValueError:
+            continue
+
+        versions.append((version_key, version, filename))
+
+    if not versions:
+        return jsonify({
+            "status": "error",
+            "message": "No firmware files found"
+        }), 404
+
+    versions.sort(key=lambda item: item[0], reverse=True)
+
+    _, latest_version, latest_filename = versions[0]
+
     return jsonify({
         "status": "ok",
-        "version": "0.41",
-        "bin": "/firmware/Chess_0_41.bin",
+        "version": latest_version,
+        "bin": f"/firmware/{latest_filename}",
         "notes": "Current development firmware"
     })
 
