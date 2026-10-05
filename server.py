@@ -252,19 +252,16 @@ def ping():
     return 'pong', 200
 
 
-@app.route("/firmware/version", methods=["GET"])
-def firmware_version():
-    firmware_dir = os.path.join(app.root_path, "firmware")
+# ---------- Firmware ----------
 
+def get_firmware_catalog():
+    firmware_dir = os.path.join(app.root_path, "firmware")
     versions = []
 
     try:
         filenames = os.listdir(firmware_dir)
-    except OSError as e:
-        return jsonify({
-            "status": "error",
-            "message": f"Could not read firmware directory: {e}"
-        }), 500
+    except OSError:
+        return []
 
     for filename in filenames:
         if not filename.startswith("Chess_0_") or not filename.endswith(".bin"):
@@ -279,7 +276,25 @@ def firmware_version():
         except ValueError:
             continue
 
-        versions.append((version_key, version, filename))
+        versions.append({
+            "version": version,
+            "bin": f"/firmware/{filename}",
+            "_key": version_key
+        })
+
+    # Newest firmware first
+    versions.sort(key=lambda item: item["_key"], reverse=True)
+
+    # _key is only needed internally for sorting
+    for item in versions:
+        del item["_key"]
+
+    return versions
+
+
+@app.route("/firmware/version", methods=["GET"])
+def firmware_version():
+    versions = get_firmware_catalog()
 
     if not versions:
         return jsonify({
@@ -287,21 +302,40 @@ def firmware_version():
             "message": "No firmware files found"
         }), 404
 
-    versions.sort(key=lambda item: item[0], reverse=True)
+    latest = versions[0]
 
-    _, latest_version, latest_filename = versions[0]
+    # Keep this response compatible with the existing ESP32 firmware.
+    return jsonify({
+        "status": "ok",
+        "version": latest["version"],
+        "bin": latest["bin"],
+        "notes": "Current development firmware"
+    })
+
+
+@app.route("/firmware/catalog", methods=["GET"])
+def firmware_catalog():
+    versions = get_firmware_catalog()
+
+    if not versions:
+        return jsonify({
+            "status": "error",
+            "message": "No firmware files found",
+            "versions": []
+        }), 404
 
     return jsonify({
         "status": "ok",
-        "version": latest_version,
-        "bin": f"/firmware/{latest_filename}",
-        "notes": "Current development firmware"
+        "latest": versions[0]["version"],
+        "versions": versions
     })
 
 
 @app.route("/firmware/<path:filename>", methods=["GET"])
 def firmware_download(filename):
     return send_from_directory("firmware", filename)
+
+#-------------------------------------------------------------------------------------
 
 @app.route("/games/my-open", methods=["POST"])
 def my_open_status():
