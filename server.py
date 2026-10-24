@@ -337,6 +337,65 @@ def firmware_download(filename):
 
 #-------------------------------------------------------------------------------------
 
+@app.route("/game/finished", methods=["POST"])
+def acknowledge_finished_game():
+
+    def _impl():
+        data = request.get_json(silent=True) or {}
+
+        game_id = data.get("game_id")
+        device_id = data.get("device_id")
+
+        if not game_id or not device_id:
+            return jsonify({
+                "status": "error",
+                "message": "Missing game_id or device_id"
+            }), 400
+
+        game = games.get(game_id)
+
+        if game is None:
+            return jsonify({
+                "status": "ok",
+                "message": "Game already removed"
+            })
+
+        if device_id not in game.get("owners", []):
+            return jsonify({
+                "status": "error",
+                "message": "Unauthorized device"
+            }), 403
+
+        if not game_is_over(game):
+            return jsonify({
+                "status": "error",
+                "message": "Game is not complete"
+            }), 409
+
+        acknowledgments = game.setdefault("finished_ack", [])
+
+        if device_id not in acknowledgments:
+            acknowledgments.append(device_id)
+
+        owners = game.get("owners", [])
+
+        if all(owner in acknowledgments for owner in owners):
+            del games[game_id]
+
+            return jsonify({
+                "status": "ok",
+                "message": "Both players acknowledged; game deleted",
+                "deleted": True
+            })
+
+        return jsonify({
+            "status": "ok",
+            "message": "Completion acknowledged",
+            "deleted": False
+        })
+
+    return mutate(_impl)
+
 @app.route("/games/my-open", methods=["POST"])
 def my_open_status():
     data      = request.get_json(force=True, silent=True) or {}
