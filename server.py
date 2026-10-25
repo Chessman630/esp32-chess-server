@@ -1,3 +1,6 @@
+from datetime import timedelta
+from threading import Lock
+import time
 from flask import Flask, request, jsonify, Response, send_from_directory
 import os
 import json
@@ -144,6 +147,73 @@ def ensure_two_players(game):
 
 def game_is_over(game):
     return bool(game.get("winner")) or bool(game.get("result"))
+# ---------- Automatic completed-game cleanup ----------
+
+GAME_RETENTION = timedelta(hours=48)
+CLEANUP_INTERVAL = 300  # Check every 5 minutes
+
+last_cleanup = 0.0
+cleanup_lock = Lock()
+
+
+def cleanup_completed_games():
+    global last_cleanup
+
+    now_monotonic = time.monotonic()
+
+    # Avoid unnecessary scans
+    if now_monotonic - last_cleanup < CLEANUP_INTERVAL:
+        return
+
+    if not cleanup_lock.acquire(blocking=False):
+        return
+
+    try:
+        now_monotonic = time.monotonic()
+
+        if now_monotonic - last_cleanup < CLEANUP_INTERVAL:
+            return
+
+        now = datetime.now(timezone.utc)
+        expired = []
+
+        for game_id, game in list(games.items()):
+
+            if not game_is_over(game):
+                continue
+
+            completed_at = game.get("completed_at")
+
+            if not completed_at:
+                continue
+
+            try:
+                completed = datetime.fromisoformat(
+                    completed_at.replace("Z", "+00:00")
+                )
+
+                # Existing timestamps are UTC but lack an offset.
+                if completed.tzinfo is None:
+                    completed = completed.replace(tzinfo=timezone.utc)
+
+            except (ValueError, TypeError, AttributeError):
+                print(f"[CLEANUP] Invalid timestamp: {game_id}")
+                continue
+
+            if now - completed >= GAME_RETENTION:
+                expired.append(game_id)
+
+        if expired:
+            for game_id in expired:
+                del games[game_id]
+                print(f"[CLEANUP] Expired game removed: {game_id}")
+
+            save_games()
+
+        last_cleanup = now_monotonic
+
+    finally:
+        cleanup_lock.release()
 
 
 def build_board_from_moves(game):
@@ -246,6 +316,10 @@ def minimal_pgn_from_uci(game_id, game):
     return "\n".join(tags) + "\n\n" + body + "\n"
 
 # ---------- Core Routes ----------
+@app.before_request
+def automatic_game_cleanup():
+    cleanup_completed_games()
+
 
 @app.route('/ping', methods=['GET'])
 def ping():
