@@ -472,47 +472,80 @@ def acknowledge_finished_game():
 
 @app.route("/games/my-open", methods=["POST"])
 def my_open_status():
-    data      = request.get_json(force=True, silent=True) or {}
+    data = request.get_json(force=True, silent=True) or {}
     device_id = data.get("device_id")
+
     if not device_id:
-        return jsonify({"status":"error","message":"Missing device_id"}), 400
+        return jsonify({
+            "status": "error",
+            "message": "Missing device_id"
+        }), 400
 
     waiting, joined = [], []
-    for gid, g in games.items():
-        owners = g.get("owners", [])
-        if not owners or owners[0] != device_id:
-            continue  # only games this device CREATED
 
-        # skip finished games
-        if g.get("winner") is not None or g.get("result") is not None:
+    for gid, g in games.items():
+
+        owners = g.get("owners", [])
+
+        # Include games belonging to EITHER player.
+        if device_id not in owners:
             continue
 
-        if len(owners) == 1 and not g.get("color_chosen", False):
+        # Ignore completed games.
+        if (g.get("winner") is not None or
+                g.get("result") is not None):
+            continue
+
+        # Open game awaiting an opponent.
+        if (len(owners) == 1 and
+                owners[0] == device_id and
+                not g.get("color_chosen", False)):
+
             waiting.append({
-                "game_id":  gid,
-                "created":  g.get("created",""),
+                "game_id": gid,
+                "created": g.get("created", "")
             })
-        elif len(owners) == 2 and g.get("color_chosen", False):
-            # This one has been joined – tell Gary who/when
+
+        # Joined game: either participant may query it.
+        elif (len(owners) == 2 and
+              g.get("color_chosen", False)):
+
             usernames = g.get("usernames", [])
-            # best effort for joiner name
-            opp_name = ""
-            if len(usernames) >= 2:
-                opp_name = usernames[1]              # joiner username
-            else:
-                opp_name = g.get("joiner_username","")
+
+            opponent_index = (
+                1 if owners[0] == device_id else 0
+            )
+
+            opponent_name = (
+                usernames[opponent_index]
+                if len(usernames) > opponent_index
+                else ""
+            )
+
             joined.append({
-                "game_id":     gid,
-                "opponent":    opp_name,
-                "joined_at":   g.get("joined_at",""),
-                "your_color":  "white" if device_id == g.get("white_player") else "black",
-                "turn":        g.get("turn",""),
-                "move_count":  len(g.get("moves", [])),
+                "game_id": gid,
+                "opponent": opponent_name,
+                "joined_at": g.get("joined_at", ""),
+                "your_color": (
+                    "white"
+                    if device_id == g.get("white_player")
+                    else "black"
+                ),
+                "turn": g.get("turn", ""),
+                "move_count": len(g.get("moves", []))
             })
 
-    print(f"[MY-OPEN] device={device_id} waiting={len(waiting)} joined={len(joined)}")
-    return jsonify({"status":"ok","waiting_open":waiting,"joined":joined})
+    print(
+        f"[MY-OPEN] device={device_id} "
+        f"waiting={len(waiting)} "
+        f"joined={len(joined)}"
+    )
 
+    return jsonify({
+        "status": "ok",
+        "waiting_open": waiting,
+        "joined": joined
+    })
 
 @app.route("/start", methods=["POST"])
 def start_game():
