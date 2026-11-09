@@ -1,0 +1,19 @@
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Local game data
+games.json
+pairs.json
+
+# Database credentials
+.env
+.env.*
+!.env.example
+
+# Backups and temporary files
+*.old
+*.bak
+*.tmp
