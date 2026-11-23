@@ -1,9 +1,9 @@
-
+from psycopg.errors import UniqueViolation
 import chess
 import psycopg
 
 
-def submit_move(conn, game_id, user_id, uci,
+def _submit_move_transaction(conn, game_id, user_id, uci,
                 expected_move_count, request_id):
     """
     Submit one chess move using an atomic PostgreSQL transaction.
@@ -33,6 +33,13 @@ def submit_move(conn, game_id, user_id, uci,
 
             white_id, black_id, status, stored_turn = game
 
+            # Only participants may submit or retry moves.
+            if (
+                str(user_id) != str(white_id)
+                and str(user_id) != str(black_id)
+            ):
+                raise ValueError("User is not a participant")
+
             # Check for a previously committed request.
             cur.execute(
                 """
@@ -59,7 +66,9 @@ def submit_move(conn, game_id, user_id, uci,
                     "accepted": True,
                     "duplicate": True,
                     "ply": old_ply,
-                }
+                 }
+
+                    
 
             if status != "active":
                 raise ValueError("Game is not active")
@@ -151,3 +160,33 @@ def submit_move(conn, game_id, user_id, uci,
                 "ply": next_ply,
                 "next_turn": next_turn,
             }
+ 
+def submit_move(conn, game_id, user_id, uci,
+                expected_move_count, request_id):
+    """
+    Public move submission interface.
+
+    Converts known database uniqueness conflicts into
+    controlled application errors.
+    """
+    try:
+        return _submit_move_transaction(
+            conn, game_id, user_id, uci,
+            expected_move_count, request_id
+        )
+
+    except UniqueViolation as error:
+        constraint = error.diag.constraint_name
+
+        if constraint == "unique_move_request":
+            raise ValueError(
+                "Request ID already belongs to another move"
+            ) from error
+
+        if constraint == "unique_game_ply":
+            raise ValueError(
+                "Move number conflict; refresh required"
+            ) from error
+
+        raise
+
